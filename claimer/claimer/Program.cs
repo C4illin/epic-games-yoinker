@@ -162,16 +162,19 @@ namespace epic_claimer
             GetElement("//span[text()=\"Log in now\"]").Click();
 
             // wait for this element to be displayed
-            if (_wait.Until(x => x.FindElement(By.Id("egLogo")).Displayed))
-            {
-                Console.WriteLine("success");
+            // if (_wait.Until(x => x.FindElement(By.Id("egLogo")).Displayed))
+            // {
+            //     Console.WriteLine("success");
 
-                return true;
-            }
+            //     return true;
+            // }
 
-            Console.WriteLine("failed");
+            // Console.WriteLine("failed");
 
-            return false;
+            // return false;
+
+            Thread.Sleep(10000);
+            return true;
         }
 
         private static IEnumerable<string> GetFreeGamesUrls()
