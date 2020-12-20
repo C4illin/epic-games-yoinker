@@ -184,10 +184,7 @@ namespace epic_claimer
                 Console.WriteLine("failed");
             }
 
-            // return false;
-
-            Thread.Sleep(10000);
-            return true;
+            return false;
         }
 
         private static IEnumerable<string> GetFreeGamesUrls()
