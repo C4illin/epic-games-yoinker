@@ -1,38 +1,53 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Http;
 using System.Net.Mail;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
+using Newtonsoft.Json;
 using OpenQA.Selenium;
 using OpenQA.Selenium.Chrome;
 using OpenQA.Selenium.Support.UI;
-
+using Telegram.Bot;
+using Telegram.Bot.Types.Enums;
 
 namespace epic_claimer
 {
-    class Program
+    internal static class Program
     {
+        // webdriver stuff
         private static IWebDriver _driver;
-
         private static WebDriverWait _wait;
 
+        // api url for sending telegram messages.
+        private const string Url = "https://epic-games-yoinker-api.azurewebsites.net/message/send";
+
+        // user variables
         private static string _username;
         private static string _password;
-
         private static string _captcha;
+        private static string _telegram;
+
 
         private static void Main(string[] args)
         {
+            // Retrieve the user variables, these should be set through github secrets
             _username = Environment.GetEnvironmentVariable("epicname");
             _password = Environment.GetEnvironmentVariable("epicpass");
-            _captcha = Environment.GetEnvironmentVariable("captcha");
+            _captcha  = Environment.GetEnvironmentVariable("captcha");
+            
+            // optional: search in telegram for the bot "epic games yoinker, send him a message after a while he send you the id"
+            _telegram = Environment.GetEnvironmentVariable("telegram");
 
+            // Check if the arguments are valid.
             if (ValidateArguments() == false)
             {
                 return;
             }
-
+            
             // create an instance of the webdriver
             _driver = new ChromeDriver();
             // create an instance of the webdriver waiter.
@@ -40,14 +55,14 @@ namespace epic_claimer
             // maximize the window.
             _driver.Manage().Window.Maximize();
 
-            //if the cookie was not retrieved successfully.
+            // if the cookie was not retrieved successfully.
             if (GetCookie(_captcha) == false)
             {
                 Console.WriteLine("Failed to retrieve authentication cookie.");
-
                 return;
             }
 
+            // Try to login.
             if (Login(_username, _password) == false)
             {
                 return;
@@ -55,9 +70,29 @@ namespace epic_claimer
 
             Thread.Sleep(5000);
 
+            // Retrieve the game urls.
             foreach (var url in GetFreeGamesUrls())
             {
-                ClaimGame(url);
+                var status = Status.Failed;
+                
+                for (var i = 0; i < 5; i++)
+                {
+                    status = ClaimGame(url);
+                    
+                    if (status == Status.Success)
+                    {
+                        SendTelegram(url, status);
+                        break;
+                    }
+                    if (status == Status.Owned)
+                    {
+                        break;
+                    }
+                }
+                if (status == Status.Failed)
+                {
+                    SendTelegram(url,status);
+                }
             }
 
             Console.WriteLine("process finished");
@@ -71,7 +106,6 @@ namespace epic_claimer
 
                 return false;
             }
-
             try
             {
                 var mailAddress = new MailAddress(_username);
@@ -89,6 +123,7 @@ namespace epic_claimer
 
                 return false;
             }
+
 
             return true;
         }
@@ -170,10 +205,25 @@ namespace epic_claimer
 
                 Thread.Sleep(1000);
 
-                GetElement("//span[text()=\"Log in now\"]").Click();
+ 
+                if (_driver.Url != loginUrl)
+                {
+                    Console.WriteLine("success");
 
-                Thread.Sleep(10000);
+                    return true;
+                }
 
+                try
+                {
+                    GetElement("//span[text()=\"Log in now\"]").Click();
+                    
+                    Thread.Sleep(20000);
+                }
+                catch
+                {
+                    // ignored
+                }
+                
                 if (_driver.Url != loginUrl)
                 {
                     Console.WriteLine("success");
@@ -194,13 +244,14 @@ namespace epic_claimer
             _wait.Until(x => x.FindElement(By.XPath("//div[@data-component=\"CardGridDesktopBase\"]")).Displayed);
 
             Thread.Sleep(10000);
-            
-            var urls = GetElements("//a[descendant::span[text()='Free Now']]").Select(element => element.GetAttribute("href")).ToList();
-            
+
+            var urls = GetElements("//a[descendant::span[text()='Free Now']]")
+                .Select(element => element.GetAttribute("href")).ToList();
+
             return urls;
         }
 
-        private static void ClaimGame(string url)
+        private static Status ClaimGame(string url)
         {
             Console.Write($"claiming {url} : ");
 
@@ -211,27 +262,40 @@ namespace epic_claimer
             if (_driver.PageSource.Contains("Owned</span>"))
             {
                 Console.WriteLine("already owned");
-
-                return;
+                
+                return Status.Owned;
             }
 
             try
             {
                 // Click the get button.
                 GetElement("//button[@data-testid=\"purchase-cta-button\"]").Click();
-                Thread.Sleep(5000);
+                Thread.Sleep(20000);
+                if (_driver.PageSource.ToLower().Contains("please read this agreement carefully"))
+                {
+                    GetElement("//input[@id=\"agree\"]").Click();
+                    Thread.Sleep(1000);
+                    GetElement("//button[descendant::span[text()='Accept']]").Click();
+                    Thread.Sleep(1000);
+                    GetElement("//button[@data-testid=\"purchase-cta-button\"]").Click();
+                    Thread.Sleep(20000);
+                }
+                
                 // Click place order button
                 GetElement("//button[@class=\"btn btn-primary\"]").Click();
-                Thread.Sleep(5000);
+                Thread.Sleep(20000);
                 // click the agree button
                 GetElements("//button[@class=\"btn btn-primary\"]")[1].Click();
                 Thread.Sleep(5000);
+                
                 Console.WriteLine("Claimed");
+                return Status.Success;
             }
-            catch (Exception e)
+            catch
             {
-                Console.WriteLine("failed");
-                throw;
+                Console.WriteLine("Failed");
+                
+                return Status.Failed;
             }
         }
 
@@ -256,6 +320,8 @@ namespace epic_claimer
             try
             {
                 _wait.Until(x => x.FindElement(By.XPath(xPath)));
+                
+                
 
                 return _driver.FindElement(By.XPath(xPath));
             }
@@ -264,5 +330,41 @@ namespace epic_claimer
                 return null;
             }
         }
+
+        private static void SendTelegram(string url, Status status)
+        {
+            Console.Write("Sending telegram message... ");
+            if (string.IsNullOrEmpty(_telegram))
+            {
+                return;
+            }
+            try
+            {
+                var messageData = JsonConvert.SerializeObject(new
+                {
+                    Id      = Convert.ToInt32(_telegram),
+                    Url     = url,
+                    Status  = status,  
+                });
+                new HttpClient().PostAsync(Url, new StringContent(
+                    messageData,
+                    Encoding.UTF8,
+                    "application/json"
+                )).Wait();
+                Console.WriteLine("success.");
+            }
+            catch
+            {
+                Console.WriteLine("failed.");
+            }
+        }
+    }
+
+    public enum Status
+    {
+        // only status 0 and 1 can be passed to the telegram api.
+        Success = 0,
+        Failed  = 1,
+        Owned = 2,
     }
 }
